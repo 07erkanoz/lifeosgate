@@ -1,0 +1,265 @@
+name: Build All Platforms
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.41.1'
+
+jobs:
+  # ── Windows ────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - run: flutter pub get
+      - run: flutter build windows --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LifeOS-Gate-Windows
+          path: build/windows/x64/runner/Release/
+
+  # ── Android ────────────────────────────────────────────────
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - run: flutter pub get
+
+      # Signing (uses GitHub Secrets)
+      - name: Decode keystore
+        if: env.KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > android/app/lifeos_gate_upload.jks
+
+      - name: Create key.properties
+        if: env.KEY_ALIAS != ''
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        run: |
+          cat > android/key.properties << EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=lifeos_gate_upload.jks
+          EOF
+
+      - run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LifeOS-Gate-Android
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  # ── Debian / Ubuntu ────────────────────────────────────────
+  build-debian:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libsecret-1-dev libjsoncpp-dev \
+            libayatana-appindicator3-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - run: flutter pub get
+      - run: flutter build linux --release
+
+      # Package as .deb
+      - name: Create .deb package
+        run: |
+          PKG_DIR=lifeos-gate_1.0.0_amd64
+          mkdir -p $PKG_DIR/DEBIAN
+          mkdir -p $PKG_DIR/usr/local/bin
+          mkdir -p $PKG_DIR/usr/share/applications
+          mkdir -p $PKG_DIR/usr/share/lifeos-gate
+
+          # Copy build output
+          cp -r build/linux/x64/release/bundle/* $PKG_DIR/usr/share/lifeos-gate/
+
+          # Launcher script
+          cat > $PKG_DIR/usr/local/bin/lifeos-gate << 'LAUNCHER'
+          #!/bin/bash
+          exec /usr/share/lifeos-gate/lifeos_sftp_drive "$@"
+          LAUNCHER
+          chmod +x $PKG_DIR/usr/local/bin/lifeos-gate
+
+          # Desktop entry
+          cat > $PKG_DIR/usr/share/applications/lifeos-gate.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Name=LifeOS Gate
+          Comment=SSH/SFTP Client with AI Agent
+          Exec=/usr/local/bin/lifeos-gate
+          Icon=lifeos-gate
+          Type=Application
+          Categories=Development;Network;
+          DESKTOP
+
+          # Control file
+          cat > $PKG_DIR/DEBIAN/control << 'CONTROL'
+          Package: lifeos-gate
+          Version: 1.0.0
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-3-0, libsecret-1-0
+          Maintainer: Erkan Oz <erkanoz@github.com>
+          Description: Cross-platform SSH/SFTP client with AI Agent workbench
+           LifeOS Gate provides multi-tab SSH terminal, SFTP file browser,
+           drive mounting, and an AI agent workbench supporting Claude,
+           Codex, and Gemini CLI tools.
+          CONTROL
+
+          dpkg-deb --build $PKG_DIR
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LifeOS-Gate-Debian
+          path: lifeos-gate_1.0.0_amd64.deb
+
+  # ── Arch Linux ─────────────────────────────────────────────
+  build-arch:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install base dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            git base-devel clang cmake ninja pkg-config \
+            gtk3 xz jsoncpp libsecret \
+            libayatana-appindicator libappindicator-gtk3 \
+            unzip curl which
+
+      - uses: actions/checkout@v4
+
+      - name: Install Flutter
+        run: |
+          git clone https://github.com/flutter/flutter.git -b stable --depth 1 /opt/flutter
+          export PATH="/opt/flutter/bin:$PATH"
+          flutter precache --linux
+          flutter doctor -v
+
+      - name: Build
+        run: |
+          export PATH="/opt/flutter/bin:$PATH"
+          flutter pub get
+          flutter build linux --release
+
+      # Package as .pkg.tar.zst
+      - name: Create PKGBUILD
+        run: |
+          mkdir -p pkg-build
+          cp -r build/linux/x64/release/bundle pkg-build/
+
+          cat > pkg-build/PKGBUILD << 'PKGBUILD'
+          pkgname=lifeos-gate
+          pkgver=1.0.0
+          pkgrel=1
+          pkgdesc="Cross-platform SSH/SFTP client with AI Agent workbench"
+          arch=('x86_64')
+          license=('MIT')
+          depends=('gtk3' 'libsecret')
+
+          package() {
+            install -dm755 "$pkgdir/usr/share/lifeos-gate"
+            cp -r "$srcdir/../bundle/"* "$pkgdir/usr/share/lifeos-gate/"
+
+            install -dm755 "$pkgdir/usr/bin"
+            cat > "$pkgdir/usr/bin/lifeos-gate" << 'LAUNCHER'
+          #!/bin/bash
+          exec /usr/share/lifeos-gate/lifeos_sftp_drive "$@"
+          LAUNCHER
+            chmod +x "$pkgdir/usr/bin/lifeos-gate"
+
+            install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/lifeos-gate.desktop" << 'DESKTOP'
+          [Desktop Entry]
+          Name=LifeOS Gate
+          Comment=SSH/SFTP Client with AI Agent
+          Exec=/usr/bin/lifeos-gate
+          Icon=lifeos-gate
+          Type=Application
+          Categories=Development;Network;
+          DESKTOP
+          }
+          PKGBUILD
+
+      - name: Build package
+        run: |
+          cd pkg-build
+          # makepkg can't run as root, create build user
+          useradd -m builder
+          chown -R builder:builder .
+          chown -R builder:builder ../build
+          su builder -c "makepkg -sf --noconfirm" || true
+          # If makepkg fails (common in CI), create tar manually
+          if [ ! -f *.pkg.tar.zst ]; then
+            tar -czf lifeos-gate-1.0.0-1-x86_64.pkg.tar.gz bundle/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LifeOS-Gate-ArchLinux
+          path: pkg-build/lifeos-gate-*
+
+  # ── Release ────────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-android, build-debian, build-arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Prepare release files
+        run: |
+          cd LifeOS-Gate-Windows && zip -r ../LifeOS-Gate-Windows.zip . && cd ..
+          cp LifeOS-Gate-Android/app-release.apk LifeOS-Gate-Android.apk
+          cp LifeOS-Gate-Debian/*.deb LifeOS-Gate-Debian.deb || true
+          cp LifeOS-Gate-ArchLinux/lifeos-gate-* LifeOS-Gate-ArchLinux.pkg.tar.gz || true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            LifeOS-Gate-Windows.zip
+            LifeOS-Gate-Android.apk
+            LifeOS-Gate-Debian.deb
+            LifeOS-Gate-ArchLinux.pkg.tar.gz
+          generate_release_notes: true

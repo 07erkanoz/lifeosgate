@@ -1,0 +1,35 @@
+# Build
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE
+*.iml
+.idea/
+.vscode/
+
+# Secrets & signing
+key.properties
+*.jks
+*.keystore
+
+# Debug
+debug_agent.log
+*.log
+
+# Archives
+*.rar
+*.tar.xz
+*.zip
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Crash logs
+crash_log.txt

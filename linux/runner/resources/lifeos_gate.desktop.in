@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LifeOS Gate
+Comment=SSH/SFTP Client
+Exec="@CMAKE_INSTALL_PREFIX@/LifeOS Gate"
+Icon=@CMAKE_INSTALL_PREFIX@/data/flutter_assets/assets/tray_icon.png
+Terminal=false
+Categories=System;Utility;Network;RemoteAccess;TerminalEmulator;
+Keywords=Terminal;Console;SSH;SFTP;
+StartupNotify=true
